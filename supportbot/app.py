@@ -25,8 +25,10 @@ from aiogram.types import (
 from supportbot.config import Settings
 from supportbot.db import Database
 from supportbot.keyboards import (
+    BTN_ADMIN_PANEL,
     BTN_MY_TICKETS,
     BTN_NEW_TICKET,
+    admin_menu,
     cancel_keyboard,
     ticket_list_keyboard,
     user_menu,
@@ -65,7 +67,7 @@ def admin_webapp_keyboard(settings: Settings) -> InlineKeyboardMarkup | None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Открыть админ-панель",
+                    text=BTN_ADMIN_PANEL,
                     web_app=WebAppInfo(url=settings.webapp_url),
                 )
             ]
@@ -79,12 +81,13 @@ async def send_admin_home(message: Message, settings: Settings) -> None:
             (
                 "<b>Админ-панель перенесена в Mini App.</b>\n"
                 "Укажите WEBAPP_URL в .env, потом перезапустите бота."
-            )
+            ),
+            reply_markup=admin_menu(settings.webapp_url),
         )
         return
     await message.answer(
         "<b>Админ-панель</b>\nВсе тикеты теперь открываются в Mini App.",
-        reply_markup=admin_webapp_keyboard(settings),
+        reply_markup=admin_menu(settings.webapp_url),
     )
 
 
@@ -281,6 +284,14 @@ def build_router(db: Database, settings: Settings) -> Router:
         await db.upsert_user(message.from_user)
         if not is_admin(settings, message.from_user.id):
             await message.answer("У вас нет доступа к админ-панели.")
+            return
+        await send_admin_home(message, settings)
+
+    @router.message(F.text == BTN_ADMIN_PANEL)
+    async def admin_panel_button(message: Message) -> None:
+        await db.upsert_user(message.from_user)
+        if not is_admin(settings, message.from_user.id):
+            await message.answer("У вас нет доступа к админ-панели.", reply_markup=user_menu())
             return
         await send_admin_home(message, settings)
 

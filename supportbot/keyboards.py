@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from supportbot.texts import ACTIVE_STATUSES, status_title
@@ -8,6 +8,7 @@ from supportbot.texts import ACTIVE_STATUSES, status_title
 
 BTN_NEW_TICKET = "➕ Новое обращение"
 BTN_MY_TICKETS = "📄 Мои обращения"
+BTN_ADMIN_PANEL = "Админская панель"
 BTN_HELP = "Как это работает"
 
 
@@ -19,6 +20,19 @@ def user_menu() -> object:
     return builder.as_markup(
         resize_keyboard=True,
         input_field_placeholder="Нажмите «➕ Новое обращение»",
+    )
+
+
+def admin_menu(webapp_url: str) -> object:
+    builder = ReplyKeyboardBuilder()
+    if webapp_url:
+        builder.button(text=BTN_ADMIN_PANEL, web_app=WebAppInfo(url=webapp_url))
+    else:
+        builder.button(text=BTN_ADMIN_PANEL)
+    builder.adjust(1)
+    return builder.as_markup(
+        resize_keyboard=True,
+        input_field_placeholder="Откройте админскую панель",
     )
 
 
