@@ -123,6 +123,21 @@ class Database:
             cursor = await db.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,))
             return _row_to_dict(await cursor.fetchone())
 
+    async def list_users_by_usernames(self, usernames: set[str] | frozenset[str]) -> list[dict]:
+        if not usernames:
+            return []
+        placeholders = ",".join("?" for _ in usernames)
+        async with self.connect() as db:
+            cursor = await db.execute(
+                f"""
+                SELECT *
+                FROM users
+                WHERE lower(username) IN ({placeholders})
+                """,
+                tuple(usernames),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
     async def create_ticket(self, user_id: int) -> dict:
         async with self.connect() as db:
             cursor = await db.execute(

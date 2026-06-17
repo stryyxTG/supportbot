@@ -16,14 +16,33 @@ def _parse_admin_ids(raw: str) -> frozenset[int]:
         item = item.strip()
         if not item:
             continue
-        values.add(int(item))
+        try:
+            values.add(int(item))
+        except ValueError as exc:
+            raise RuntimeError(
+                "ADMIN_IDS must contain only numeric Telegram IDs. "
+                "Use ADMIN_USERNAMES for @usernames."
+            ) from exc
     return frozenset(values)
+
+
+def normalize_username(value: str | None) -> str:
+    return (value or "").strip().removeprefix("@").lower()
+
+
+def _parse_admin_usernames(raw: str) -> frozenset[str]:
+    return frozenset(
+        username
+        for username in (normalize_username(item) for item in raw.replace(";", ",").split(","))
+        if username
+    )
 
 
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
     admin_ids: frozenset[int]
+    admin_usernames: frozenset[str]
     database_path: Path
     support_title: str
     max_open_tickets: int = 3
@@ -38,8 +57,12 @@ class Settings:
             raise RuntimeError("BOT_TOKEN is required. Put it into .env")
 
         admins = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
-        if not admins:
-            raise RuntimeError("ADMIN_IDS is required. Example: ADMIN_IDS=123,456")
+        admin_usernames = _parse_admin_usernames(os.getenv("ADMIN_USERNAMES", ""))
+        if not admins and not admin_usernames:
+            raise RuntimeError(
+                "ADMIN_IDS or ADMIN_USERNAMES is required. "
+                "Examples: ADMIN_IDS=123,456 or ADMIN_USERNAMES=user1,user2"
+            )
 
         db_path = Path(os.getenv("DATABASE_PATH", "data/support.sqlite3"))
         title = os.getenv("SUPPORT_TITLE", "Техническая поддержка").strip()
@@ -51,6 +74,7 @@ class Settings:
         return cls(
             bot_token=token,
             admin_ids=admins,
+            admin_usernames=admin_usernames,
             database_path=db_path,
             support_title=title,
             max_open_tickets=max_open,

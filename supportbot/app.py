@@ -22,7 +22,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-from supportbot.config import Settings
+from supportbot.config import Settings, normalize_username
 from supportbot.db import Database
 from supportbot.keyboards import (
     BTN_ADMIN_PANEL,
@@ -52,8 +52,12 @@ logger = logging.getLogger(__name__)
 TICKET_PAGE_SIZE = 7
 
 
-def is_admin(settings: Settings, user_id: int) -> bool:
-    return user_id in settings.admin_ids
+def is_admin(settings: Settings, tg_user_or_id: object) -> bool:
+    if isinstance(tg_user_or_id, int):
+        return tg_user_or_id in settings.admin_ids
+    user_id = getattr(tg_user_or_id, "id", None)
+    username = normalize_username(getattr(tg_user_or_id, "username", None))
+    return user_id in settings.admin_ids or username in settings.admin_usernames
 
 
 def parse_callback_id(data: str) -> int:
@@ -92,7 +96,7 @@ async def send_admin_home(message: Message, settings: Settings) -> None:
 
 
 async def send_home(message: Message, settings: Settings) -> None:
-    if is_admin(settings, message.from_user.id):
+    if is_admin(settings, message.from_user):
         await send_admin_home(message, settings)
         return
     await message.answer(
@@ -150,7 +154,9 @@ async def notify_admins_about_ticket(
     body = text_of(source_message) if source_message is not None else ""
     content_type = content_type_of(source_message) if source_message is not None else "service"
     markup = admin_webapp_keyboard(settings)
-    recipients = list(settings.admin_ids)
+    recipients = set(settings.admin_ids)
+    for admin_user in await db.list_users_by_usernames(settings.admin_usernames):
+        recipients.add(int(admin_user["tg_id"]))
     for admin_id in recipients:
         try:
             await bot.send_message(
@@ -282,7 +288,7 @@ def build_router(db: Database, settings: Settings) -> Router:
     @router.message(Command("admin"))
     async def admin(message: Message) -> None:
         await db.upsert_user(message.from_user)
-        if not is_admin(settings, message.from_user.id):
+        if not is_admin(settings, message.from_user):
             await message.answer("У вас нет доступа к админ-панели.")
             return
         await send_admin_home(message, settings)
@@ -290,14 +296,14 @@ def build_router(db: Database, settings: Settings) -> Router:
     @router.message(F.text == BTN_ADMIN_PANEL)
     async def admin_panel_button(message: Message) -> None:
         await db.upsert_user(message.from_user)
-        if not is_admin(settings, message.from_user.id):
+        if not is_admin(settings, message.from_user):
             await message.answer("У вас нет доступа к админ-панели.", reply_markup=user_menu())
             return
         await send_admin_home(message, settings)
 
     @router.message(F.text.in_({BTN_NEW_TICKET, "Новое обращение"}))
     async def new_ticket(message: Message, state: FSMContext) -> None:
-        if is_admin(settings, message.from_user.id):
+        if is_admin(settings, message.from_user):
             await send_admin_home(message, settings)
             return
         await db.upsert_user(message.from_user)
@@ -312,7 +318,7 @@ def build_router(db: Database, settings: Settings) -> Router:
 
     @router.message(F.text.in_({BTN_MY_TICKETS, "Мои обращения"}))
     async def my_tickets(message: Message) -> None:
-        if is_admin(settings, message.from_user.id):
+        if is_admin(settings, message.from_user):
             await send_admin_home(message, settings)
             return
         await db.upsert_user(message.from_user)
@@ -453,13 +459,13 @@ def build_router(db: Database, settings: Settings) -> Router:
     @router.callback_query(F.data.startswith("a:"))
     async def removed_admin_callbacks(callback: CallbackQuery) -> None:
         await callback.answer("Админ-панель теперь в Mini App", show_alert=True)
-        if is_admin(settings, callback.from_user.id):
+        if is_admin(settings, callback.from_user):
             await send_admin_home(callback.message, settings)
 
     @router.message()
     async def fallback_message(message: Message, bot: Bot) -> None:
         await db.upsert_user(message.from_user)
-        if is_admin(settings, message.from_user.id):
+        if is_admin(settings, message.from_user):
             await send_admin_home(message, settings)
             return
 

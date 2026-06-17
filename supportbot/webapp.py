@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl
 from aiohttp import ClientSession, web
 from aiogram import Bot
 
-from supportbot.config import Settings
+from supportbot.config import Settings, normalize_username
 from supportbot.db import Database
 from supportbot.keyboards import user_ticket_keyboard
 from supportbot.texts import h, status_title
@@ -329,7 +329,8 @@ def _validate_init_data(init_data: str, settings: Settings) -> dict:
         raise web.HTTPUnauthorized(text="Bad signature")
 
     user = json.loads(parsed.get("user", "{}"))
-    if int(user.get("id", 0)) not in settings.admin_ids:
+    username = normalize_username(user.get("username"))
+    if int(user.get("id", 0)) not in settings.admin_ids and username not in settings.admin_usernames:
         raise web.HTTPForbidden(text="Admins only")
     return user
 
