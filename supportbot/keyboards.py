@@ -27,7 +27,7 @@ def user_ticket_keyboard(ticket: dict) -> InlineKeyboardMarkup:
     ticket_id = ticket["id"]
     if ticket["status"] in ACTIVE_STATUSES:
         builder.button(text="Написать сюда", callback_data=f"u:reply:{ticket_id}")
-        builder.button(text="Закрыть", callback_data=f"u:close:{ticket_id}")
+        builder.button(text="Закрыть обращение", callback_data=f"u:close:{ticket_id}")
     else:
         builder.button(text="Открыть заново", callback_data=f"u:reopen:{ticket_id}")
     builder.adjust(1)
