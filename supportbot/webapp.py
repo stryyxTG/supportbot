@@ -50,6 +50,9 @@ INDEX_HTML = r"""<!doctype html>
     .top { padding: 14px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 5; }
     .title { font-size: 18px; font-weight: 750; margin-bottom: 12px; }
     .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .section-tools { display: none; margin-top: 8px; }
+    .section-tools.visible { display: block; }
+    .section-tools .btn { width: 100%; }
     .tab, .btn {
       border: 1px solid var(--line);
       background: var(--panel-2);
@@ -128,6 +131,9 @@ INDEX_HTML = r"""<!doctype html>
           <button class="tab" data-section="active">Активные <span id="count-active">0</span></button>
           <button class="tab" data-section="closed">Закрытые <span id="count-closed">0</span></button>
         </div>
+        <div id="closed-tools" class="section-tools">
+          <button id="clear-closed" class="btn danger">Очистить закрытые</button>
+        </div>
       </div>
       <div id="list" class="list"></div>
       <button id="load" class="btn load">Загрузить еще</button>
@@ -182,6 +188,11 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("count-new").textContent = data.new;
       document.getElementById("count-active").textContent = data.active;
       document.getElementById("count-closed").textContent = data.closed;
+      document.getElementById("clear-closed").disabled = data.closed === 0;
+    }
+
+    function updateSectionTools() {
+      document.getElementById("closed-tools").classList.toggle("visible", section === "closed");
     }
 
     async function loadTickets(reset = true) {
@@ -191,6 +202,7 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById("list").innerHTML = "";
         document.getElementById("detail").innerHTML = '<div class="empty">Выберите тикет слева</div>';
       }
+      updateSectionTools();
       const data = await api(`/api/tickets?section=${section}&limit=${limit}&offset=${offset}`);
       const list = document.getElementById("list");
       if (reset && data.tickets.length === 0) list.innerHTML = '<div class="empty">Пусто</div>';
@@ -284,6 +296,17 @@ INDEX_HTML = r"""<!doctype html>
       await loadTickets(true);
     }
 
+    async function clearClosedTickets() {
+      if (section !== "closed") return;
+      const total = Number(document.getElementById("count-closed").textContent || "0");
+      if (total <= 0) return;
+      if (!confirm(`Удалить все закрытые обращения? Количество: ${total}`)) return;
+      const data = await api("/api/tickets/closed/clear", { method: "POST", body: "{}" });
+      selectedId = null;
+      document.getElementById("detail").innerHTML = `<div class="empty">Удалено закрытых обращений: ${esc(data.deleted)}</div>`;
+      await loadTickets(true);
+    }
+
     async function sendReply() {
       const text = document.getElementById("reply").value.trim();
       if (!text) return;
@@ -299,6 +322,7 @@ INDEX_HTML = r"""<!doctype html>
       await loadTickets(true);
     });
     document.getElementById("load").onclick = () => loadTickets(false);
+    document.getElementById("clear-closed").onclick = clearClosedTickets;
     if (!initData) {
       document.body.innerHTML = `
         <div class="empty">
@@ -418,6 +442,13 @@ async def list_tickets(request: web.Request) -> web.Response:
             "has_more": offset + len(tickets) < total,
         }
     )
+
+
+async def clear_closed_tickets(request: web.Request) -> web.Response:
+    _admin_user(request)
+    db: Database = request.app["db"]
+    deleted = await db.clear_closed_tickets()
+    return _json({"ok": True, "deleted": deleted})
 
 
 async def ticket_detail(request: web.Request) -> web.Response:
@@ -591,6 +622,7 @@ async def create_web_app(bot: Bot, db: Database, settings: Settings) -> web.Appl
     app.router.add_get("/admin", index)
     app.router.add_get("/api/counts", counts)
     app.router.add_get("/api/tickets", list_tickets)
+    app.router.add_post("/api/tickets/closed/clear", clear_closed_tickets)
     app.router.add_get("/api/tickets/{ticket_id:\\d+}", ticket_detail)
     app.router.add_post("/api/tickets/{ticket_id:\\d+}/claim", claim_ticket)
     app.router.add_post("/api/tickets/{ticket_id:\\d+}/reply", reply_ticket)

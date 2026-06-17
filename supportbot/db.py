@@ -494,6 +494,18 @@ class Database:
             row = await cursor.fetchone()
             return int(row["count"])
 
+    async def clear_closed_tickets(self) -> int:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM tickets
+                WHERE status IN ('closed', 'resolved')
+                RETURNING id
+                """
+            )
+            rows = await cursor.fetchall()
+            return len(rows)
+
     async def list_ticket_messages(
         self,
         ticket_id: int,
