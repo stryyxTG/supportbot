@@ -84,6 +84,17 @@ INDEX_HTML = r"""<!doctype html>
     .msg.admin { background: #161e2c; }
     .msg-head { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
     .msg-body { white-space: pre-wrap; word-break: break-word; }
+    .thumb-link { display: block; margin-top: 8px; }
+    .thumb {
+      display: block;
+      width: min(100%, 360px);
+      max-height: 320px;
+      object-fit: contain;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d0f13;
+    }
+    .file-link { display: inline-block; margin-top: 8px; text-decoration: none; }
     .composer { display: grid; gap: 8px; margin-top: 12px; }
     textarea {
       width: 100%;
@@ -150,6 +161,10 @@ INDEX_HTML = r"""<!doctype html>
       return String(value ?? "").replace(/[&<>"']/g, ch => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
       }[ch]));
+    }
+
+    function fileUrl(messageId) {
+      return `/api/messages/${messageId}/file?init_data=${encodeURIComponent(initData)}`;
     }
 
     function userLabel(ticket) {
@@ -228,13 +243,18 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("claim")?.addEventListener("click", claimTicket);
       document.getElementById("close")?.addEventListener("click", closeTicket);
       document.getElementById("send")?.addEventListener("click", sendReply);
-      document.querySelectorAll("[data-file]").forEach(btn => btn.addEventListener("click", () => openFile(btn.dataset.file)));
     }
 
     function renderMessage(m) {
       const role = m.sender_role === "admin" ? "Оператор" : "Пользователь";
-      const media = m.content_type !== "text"
-        ? `<button class="btn" data-file="${m.id}">Открыть вложение: ${esc(m.content_type)}</button>`
+      const hasFile = m.has_file && m.content_type !== "text";
+      const url = hasFile ? fileUrl(m.id) : "";
+      const label = m.content_type === "photo" ? "Открыть фото" : `Открыть вложение: ${m.content_type}`;
+      const preview = m.content_type === "photo"
+        ? `<a class="thumb-link" href="${esc(url)}" target="_blank" rel="noopener"><img class="thumb" src="${esc(url)}" alt=""></a>`
+        : "";
+      const media = hasFile
+        ? `${preview}<a class="btn file-link" href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`
         : "";
       return `
         <div class="msg ${m.sender_role === "admin" ? "admin" : ""}">
@@ -264,20 +284,6 @@ INDEX_HTML = r"""<!doctype html>
       await api(`/api/tickets/${selectedId}/reply`, { method: "POST", body: JSON.stringify({ text }) });
       await openTicket(selectedId);
       await loadTickets(true);
-    }
-
-    async function openFile(messageId) {
-      const res = await fetch(`/api/messages/${messageId}/file`, {
-        headers: { "X-Telegram-Init-Data": initData }
-      });
-      if (!res.ok) {
-        alert("Не удалось открыть вложение");
-        return;
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
     document.querySelectorAll(".tab").forEach(btn => btn.onclick = async () => {
@@ -330,7 +336,7 @@ def _validate_init_data(init_data: str, settings: Settings) -> dict:
 
 def _admin_user(request: web.Request) -> dict:
     settings: Settings = request.app["settings"]
-    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    init_data = request.headers.get("X-Telegram-Init-Data", "") or request.query.get("init_data", "")
     return _validate_init_data(init_data, settings)
 
 
@@ -523,6 +529,10 @@ async def message_file(request: web.Request) -> web.StreamResponse:
         return web.Response(
             body=body,
             content_type=response.headers.get("Content-Type", "application/octet-stream"),
+            headers={
+                "Content-Disposition": "inline",
+                "Cache-Control": "private, max-age=300",
+            },
         )
 
 
