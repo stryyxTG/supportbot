@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from supportbot.texts import ACTIVE_STATUSES, status_title
@@ -23,12 +23,9 @@ def user_menu() -> object:
     )
 
 
-def admin_menu(webapp_url: str) -> object:
+def admin_menu() -> object:
     builder = ReplyKeyboardBuilder()
-    if webapp_url:
-        builder.button(text=BTN_ADMIN_PANEL, web_app=WebAppInfo(url=webapp_url))
-    else:
-        builder.button(text=BTN_ADMIN_PANEL)
+    builder.button(text=BTN_ADMIN_PANEL)
     builder.adjust(1)
     return builder.as_markup(
         resize_keyboard=True,

@@ -86,12 +86,16 @@ async def send_admin_home(message: Message, settings: Settings) -> None:
                 "<b>Админ-панель перенесена в Mini App.</b>\n"
                 "Укажите WEBAPP_URL в .env, потом перезапустите бота."
             ),
-            reply_markup=admin_menu(settings.webapp_url),
+            reply_markup=admin_menu(),
         )
         return
     await message.answer(
-        "<b>Админ-панель</b>\nВсе тикеты теперь открываются в Mini App.",
-        reply_markup=admin_menu(settings.webapp_url),
+        "<b>Админ-панель</b>\nНижняя кнопка оставлена только для админа.",
+        reply_markup=admin_menu(),
+    )
+    await message.answer(
+        "Откройте Mini App кнопкой ниже.",
+        reply_markup=admin_webapp_keyboard(settings),
     )
 
 

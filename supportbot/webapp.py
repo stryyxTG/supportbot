@@ -293,9 +293,19 @@ INDEX_HTML = r"""<!doctype html>
       await loadTickets(true);
     });
     document.getElementById("load").onclick = () => loadTickets(false);
-    loadTickets(true).catch(err => {
-      document.body.innerHTML = `<div class="empty">Ошибка доступа или загрузки<br>${esc(err.message)}</div>`;
-    });
+    if (!initData) {
+      document.body.innerHTML = `
+        <div class="empty">
+          <b>Админ-панель нужно открыть через кнопку бота</b><br>
+          Напишите /admin новому боту и нажмите inline-кнопку «Админская панель».<br>
+          Если токен менялся, перезапустите бота на сервере.
+        </div>
+      `;
+    } else {
+      loadTickets(true).catch(err => {
+        document.body.innerHTML = `<div class="empty">Ошибка доступа или загрузки<br>${esc(err.message)}</div>`;
+      });
+    }
   </script>
 </body>
 </html>"""
