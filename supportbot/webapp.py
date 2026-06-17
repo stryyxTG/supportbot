@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import mimetypes
+from pathlib import PurePosixPath
 from urllib.parse import parse_qsl
 
 from aiohttp import ClientSession, web
@@ -95,6 +97,8 @@ INDEX_HTML = r"""<!doctype html>
       background: #0d0f13;
     }
     .file-link { display: inline-block; margin-top: 8px; text-decoration: none; }
+    .file-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .file-actions .file-link { margin-top: 0; }
     .composer { display: grid; gap: 8px; margin-top: 12px; }
     textarea {
       width: 100%;
@@ -163,8 +167,9 @@ INDEX_HTML = r"""<!doctype html>
       }[ch]));
     }
 
-    function fileUrl(messageId) {
-      return `/api/messages/${messageId}/file?init_data=${encodeURIComponent(initData)}`;
+    function fileUrl(messageId, download = false) {
+      const url = `/api/messages/${messageId}/file?init_data=${encodeURIComponent(initData)}`;
+      return download ? `${url}&download=1` : url;
     }
 
     function userLabel(ticket) {
@@ -249,12 +254,13 @@ INDEX_HTML = r"""<!doctype html>
       const role = m.sender_role === "admin" ? "Оператор" : "Пользователь";
       const hasFile = m.has_file && m.content_type !== "text";
       const url = hasFile ? fileUrl(m.id) : "";
+      const downloadUrl = hasFile ? fileUrl(m.id, true) : "";
       const label = m.content_type === "photo" ? "Открыть фото" : `Открыть вложение: ${m.content_type}`;
       const preview = m.content_type === "photo"
         ? `<a class="thumb-link" href="${esc(url)}" target="_blank" rel="noopener"><img class="thumb" src="${esc(url)}" alt=""></a>`
         : "";
       const media = hasFile
-        ? `${preview}<a class="btn file-link" href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+        ? `${preview}<div class="file-actions"><a class="btn file-link" href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a><a class="btn file-link" href="${esc(downloadUrl)}" target="_blank" rel="noopener">Скачать</a></div>`
         : "";
       return `
         <div class="msg ${m.sender_role === "admin" ? "admin" : ""}">
@@ -520,6 +526,29 @@ async def close_ticket(request: web.Request) -> web.Response:
     return _json({"ok": True, "ticket": ticket})
 
 
+def _file_meta(message: dict, file_path: str | None, telegram_content_type: str | None) -> tuple[str, str]:
+    path = PurePosixPath(file_path or "")
+    extension = path.suffix.lower()
+    message_type = message.get("content_type") or "file"
+
+    if message_type == "photo" and extension not in {".jpg", ".jpeg", ".png", ".webp"}:
+        extension = ".jpg"
+    elif not extension and telegram_content_type:
+        extension = mimetypes.guess_extension(telegram_content_type.split(";", 1)[0].strip()) or ""
+
+    filename = f"ticket-{message['ticket_id']}-message-{message['id']}{extension}"
+    guessed_type = mimetypes.guess_type(filename)[0]
+
+    if message_type == "photo":
+        content_type = guessed_type or "image/jpeg"
+    elif guessed_type:
+        content_type = guessed_type
+    else:
+        content_type = telegram_content_type or "application/octet-stream"
+
+    return filename, content_type
+
+
 async def message_file(request: web.Request) -> web.StreamResponse:
     _admin_user(request)
     db: Database = request.app["db"]
@@ -537,11 +566,17 @@ async def message_file(request: web.Request) -> web.StreamResponse:
         if response.status != 200:
             raise web.HTTPBadGateway(text="Telegram file download failed")
         body = await response.read()
+        filename, content_type = _file_meta(
+            message,
+            tg_file.file_path,
+            response.headers.get("Content-Type"),
+        )
+        disposition = "attachment" if request.query.get("download") == "1" else "inline"
         return web.Response(
             body=body,
-            content_type=response.headers.get("Content-Type", "application/octet-stream"),
+            content_type=content_type,
             headers={
-                "Content-Disposition": "inline",
+                "Content-Disposition": f'{disposition}; filename="{filename}"',
                 "Cache-Control": "private, max-age=300",
             },
         )
