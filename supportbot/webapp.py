@@ -35,8 +35,10 @@ INDEX_HTML = r"""<!doctype html>
       --accent: #4f8cff;
       --danger: #ff5c73;
       --ok: #45c486;
+      --attention: #f0b84b;
     }
     * { box-sizing: border-box; }
+    html { background: var(--bg); }
     body {
       margin: 0;
       background: var(--bg);
@@ -44,11 +46,23 @@ INDEX_HTML = r"""<!doctype html>
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     button, textarea, input { font: inherit; }
-    .app { display: grid; grid-template-columns: 390px 1fr; min-height: 100vh; }
-    .side { border-right: 1px solid var(--line); background: var(--panel); min-width: 0; }
-    .main { min-width: 0; }
-    .top { padding: 14px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 5; }
-    .title { font-size: 18px; font-weight: 750; margin-bottom: 12px; }
+    button:disabled { cursor: default; opacity: .45; }
+    .app { min-height: 100vh; }
+    .side { width: min(100%, 760px); min-height: 100vh; margin: 0 auto; background: var(--panel); }
+    .main { display: none; min-height: 100vh; background: var(--bg); }
+    .app.detail-open .side { display: none; }
+    .app.detail-open .main { display: block; }
+    .top {
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      background: rgba(23, 25, 31, .96);
+      backdrop-filter: blur(12px);
+      z-index: 5;
+    }
+    .title { font-size: 18px; font-weight: 750; margin: 0; }
+    .top-title { margin-bottom: 12px; }
     .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .section-tools { display: none; margin-top: 8px; }
     .section-tools.visible { display: block; }
@@ -62,22 +76,78 @@ INDEX_HTML = r"""<!doctype html>
       cursor: pointer;
     }
     .tab.active { border-color: var(--accent); color: white; background: #263654; }
+    .tab-count { color: var(--muted); }
+    .tab.active .tab-count { color: white; }
+    .unread-count {
+      display: inline-grid;
+      place-items: center;
+      min-width: 18px;
+      height: 18px;
+      margin-left: 3px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--attention);
+      color: #18130a;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .unread-count.hidden { display: none; }
     .list { padding: 10px; display: grid; gap: 8px; }
     .ticket {
+      position: relative;
       padding: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #15171d;
       cursor: pointer;
+      transition: border-color .15s ease, background .15s ease, transform .15s ease;
     }
-    .ticket.active { border-color: var(--accent); }
+    .ticket:hover { border-color: #454b58; }
+    .ticket:active { transform: scale(.995); }
+    .ticket.unread {
+      border-color: #8d6b2e;
+      background: #211d16;
+      box-shadow: inset 3px 0 0 var(--attention);
+    }
     .row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
     .num { font-weight: 750; }
+    .ticket-state { display: flex; justify-content: flex-end; align-items: center; gap: 6px; flex-wrap: wrap; text-align: right; }
     .status { color: var(--muted); font-size: 12px; }
+    .new-message {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: var(--attention);
+      color: #18130a;
+      font-size: 11px;
+      font-weight: 800;
+    }
     .user { color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .preview { margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .empty { color: var(--muted); padding: 20px; text-align: center; }
-    .detail { padding: 16px; max-width: 980px; margin: 0 auto; }
+    .detail-top {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 56px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(16, 17, 20, .96);
+      backdrop-filter: blur(12px);
+    }
+    .back-btn {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 11px;
+      cursor: pointer;
+    }
+    .detail-title { min-width: 0; font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail { padding: 16px; max-width: 920px; margin: 0 auto; }
     .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
     .meta { color: var(--muted); display: grid; gap: 3px; margin-top: 8px; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
@@ -85,8 +155,8 @@ INDEX_HTML = r"""<!doctype html>
     .btn.ok { background: #1e4937; border-color: #2e8c61; }
     .btn.danger { background: #522331; border-color: var(--danger); }
     .messages { display: grid; gap: 8px; }
-    .msg { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #15171d; }
-    .msg.admin { background: #161e2c; }
+    .msg { width: fit-content; max-width: 84%; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #15171d; }
+    .msg.admin { margin-left: auto; background: #172338; border-color: #294266; }
     .msg-head { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
     .msg-body { white-space: pre-wrap; word-break: break-word; }
     .thumb-link { display: block; margin-top: 8px; }
@@ -115,9 +185,11 @@ INDEX_HTML = r"""<!doctype html>
     }
     .load { width: calc(100% - 20px); margin: 0 10px 12px; }
     @media (max-width: 780px) {
-      .app { grid-template-columns: 1fr; }
-      .side { border-right: 0; border-bottom: 1px solid var(--line); }
       .detail { padding: 12px; }
+      .tabs { gap: 6px; }
+      .tab { padding: 9px 6px; }
+      .back-btn { padding: 8px 10px; }
+      .msg { max-width: 94%; }
     }
   </style>
 </head>
@@ -125,11 +197,11 @@ INDEX_HTML = r"""<!doctype html>
   <div class="app">
     <aside class="side">
       <div class="top">
-        <div class="title">Админ-панель</div>
+        <div class="title top-title">Админ-панель</div>
         <div class="tabs">
-          <button class="tab active" data-section="new">Новые <span id="count-new">0</span></button>
-          <button class="tab" data-section="active">Активные <span id="count-active">0</span></button>
-          <button class="tab" data-section="closed">Закрытые <span id="count-closed">0</span></button>
+          <button class="tab active" data-section="new">Новые <span id="count-new" class="tab-count">0</span></button>
+          <button class="tab" data-section="active">Активные <span id="count-active" class="tab-count">0</span><span id="count-active-unread" class="unread-count hidden">0</span></button>
+          <button class="tab" data-section="closed">Закрытые <span id="count-closed" class="tab-count">0</span></button>
         </div>
         <div id="closed-tools" class="section-tools">
           <button id="clear-closed" class="btn danger">Очистить закрытые</button>
@@ -139,8 +211,12 @@ INDEX_HTML = r"""<!doctype html>
       <button id="load" class="btn load">Загрузить еще</button>
     </aside>
     <main class="main">
+      <div class="detail-top">
+        <button id="back-to-list" class="back-btn" type="button">← К списку</button>
+        <div id="detail-title" class="detail-title">Тикет</div>
+      </div>
       <div id="detail" class="detail">
-        <div class="empty">Выберите тикет слева</div>
+        <div class="empty">Загрузка тикета...</div>
       </div>
     </main>
   </div>
@@ -149,6 +225,7 @@ INDEX_HTML = r"""<!doctype html>
     tg?.ready();
     tg?.expand();
     const initData = tg?.initData || "";
+    const app = document.querySelector(".app");
     let section = "new";
     let offset = 0;
     let selectedId = null;
@@ -188,6 +265,9 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("count-new").textContent = data.new;
       document.getElementById("count-active").textContent = data.active;
       document.getElementById("count-closed").textContent = data.closed;
+      const unread = document.getElementById("count-active-unread");
+      unread.textContent = data.active_unread;
+      unread.classList.toggle("hidden", data.active_unread === 0);
       document.getElementById("clear-closed").disabled = data.closed === 0;
     }
 
@@ -200,7 +280,6 @@ INDEX_HTML = r"""<!doctype html>
         offset = 0;
         selectedId = null;
         document.getElementById("list").innerHTML = "";
-        document.getElementById("detail").innerHTML = '<div class="empty">Выберите тикет слева</div>';
       }
       updateSectionTools();
       const data = await api(`/api/tickets?section=${section}&limit=${limit}&offset=${offset}`);
@@ -208,10 +287,14 @@ INDEX_HTML = r"""<!doctype html>
       if (reset && data.tickets.length === 0) list.innerHTML = '<div class="empty">Пусто</div>';
       for (const ticket of data.tickets) {
         const el = document.createElement("div");
-        el.className = "ticket";
+        const unread = section === "active" && ticket.admin_unread;
+        el.className = `ticket${unread ? " unread" : ""}`;
         el.dataset.id = ticket.id;
         el.innerHTML = `
-          <div class="row"><span class="num">№${esc(ticket.public_id)}</span><span class="status">${esc(ticket.status_title)}</span></div>
+          <div class="row">
+            <span class="num">№${esc(ticket.public_id)}</span>
+            <span class="ticket-state"><span class="status">${esc(ticket.status_title)}</span>${unread ? '<span class="new-message">Новое сообщение</span>' : ""}</span>
+          </div>
           <div class="user">${esc(userLabel(ticket))} · ${esc(ticket.last_message_at || "")}</div>
           <div class="preview">${esc(ticket.last_body || "[" + (ticket.last_content_type || "сообщение") + "]")}</div>
         `;
@@ -223,13 +306,27 @@ INDEX_HTML = r"""<!doctype html>
       await refreshCounts();
     }
 
+    async function showList() {
+      app.classList.remove("detail-open");
+      tg?.BackButton?.hide();
+      selectedId = null;
+      window.scrollTo({ top: 0, behavior: "auto" });
+      await loadTickets(true);
+    }
+
     async function openTicket(id) {
       selectedId = id;
-      document.querySelectorAll(".ticket").forEach(el => el.classList.toggle("active", Number(el.dataset.id) === id));
       const data = await api(`/api/tickets/${id}`);
       const t = data.ticket;
       const u = data.user;
       const messages = data.messages;
+      const isClosed = ["closed", "resolved"].includes(t.status);
+      const ticketElement = document.querySelector(`.ticket[data-id="${id}"]`);
+      ticketElement?.classList.remove("unread");
+      ticketElement?.querySelector(".new-message")?.remove();
+      app.classList.add("detail-open");
+      tg?.BackButton?.show();
+      document.getElementById("detail-title").textContent = `Тикет №${t.public_id}`;
       document.getElementById("detail").innerHTML = `
         <div class="card">
           <div class="row"><div class="title">Тикет №${esc(t.public_id)}</div><span class="status">${esc(t.status_title)}</span></div>
@@ -241,7 +338,8 @@ INDEX_HTML = r"""<!doctype html>
             <div>Последнее: ${esc(t.last_message_at || "")}</div>
           </div>
           <div class="actions">
-            ${t.status !== "closed" ? '<button class="btn ok" id="claim">Взять в работу</button><button class="btn danger" id="close">Закрыть</button>' : ""}
+            ${!isClosed && !t.assigned_admin_id ? '<button class="btn ok" id="claim">Взять в работу</button>' : ""}
+            ${!isClosed ? '<button class="btn danger" id="close">Закрыть обращение</button>' : ""}
           </div>
         </div>
         <div class="card">
@@ -249,7 +347,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="messages">
             ${messages.map(renderMessage).join("")}
           </div>
-          ${t.status !== "closed" ? `
+          ${!isClosed ? `
             <div class="composer">
               <textarea id="reply" placeholder="Ответ пользователю"></textarea>
               <button class="btn primary" id="send">Отправить ответ</button>
@@ -260,6 +358,8 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("claim")?.addEventListener("click", claimTicket);
       document.getElementById("close")?.addEventListener("click", closeTicket);
       document.getElementById("send")?.addEventListener("click", sendReply);
+      await refreshCounts();
+      window.scrollTo({ top: 0, behavior: "auto" });
     }
 
     function renderMessage(m) {
@@ -286,14 +386,12 @@ INDEX_HTML = r"""<!doctype html>
     async function claimTicket() {
       await api(`/api/tickets/${selectedId}/claim`, { method: "POST", body: "{}" });
       await openTicket(selectedId);
-      await loadTickets(true);
     }
 
     async function closeTicket() {
-      if (!confirm("Закрыть тикет?")) return;
+      if (!confirm("Закрыть обращение?")) return;
       await api(`/api/tickets/${selectedId}/close`, { method: "POST", body: "{}" });
       await openTicket(selectedId);
-      await loadTickets(true);
     }
 
     async function clearClosedTickets() {
@@ -312,7 +410,6 @@ INDEX_HTML = r"""<!doctype html>
       if (!text) return;
       await api(`/api/tickets/${selectedId}/reply`, { method: "POST", body: JSON.stringify({ text }) });
       await openTicket(selectedId);
-      await loadTickets(true);
     }
 
     document.querySelectorAll(".tab").forEach(btn => btn.onclick = async () => {
@@ -323,6 +420,8 @@ INDEX_HTML = r"""<!doctype html>
     });
     document.getElementById("load").onclick = () => loadTickets(false);
     document.getElementById("clear-closed").onclick = clearClosedTickets;
+    document.getElementById("back-to-list").onclick = showList;
+    tg?.BackButton?.onClick(showList);
     if (!initData) {
       document.body.innerHTML = `
         <div class="empty">
@@ -395,6 +494,7 @@ def _ticket_row(ticket: dict) -> dict:
         "status": ticket["status"],
         "status_title": status_title(ticket["status"]),
         "assigned_admin_id": ticket.get("assigned_admin_id"),
+        "admin_unread": bool(ticket.get("admin_unread")),
         "created_at": ticket["created_at"],
         "last_message_at": ticket.get("last_message_at"),
         "user_tg_id": ticket.get("user_tg_id"),
@@ -460,6 +560,8 @@ async def ticket_detail(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text="Ticket not found")
     ticket, user = data
     messages = await db.list_ticket_messages(ticket_id, limit=200)
+    await db.mark_ticket_read(ticket_id)
+    ticket["admin_unread"] = 0
     return _json(
         {
             "ticket": {

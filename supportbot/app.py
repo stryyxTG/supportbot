@@ -256,9 +256,14 @@ async def add_user_reply(
         file_id=file_id_of(message),
         telegram_message_id=message.message_id,
     )
+    next_status = (
+        "in_progress"
+        if ticket["status"] in {"in_progress", "waiting_user"} or ticket.get("assigned_admin_id")
+        else "waiting_admin"
+    )
     ticket = await db.set_status(
         ticket["id"],
-        "waiting_admin",
+        next_status,
         "user",
         message.from_user.id,
         "user_replied",

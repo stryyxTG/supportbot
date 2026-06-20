@@ -52,6 +52,7 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'new',
                     priority TEXT NOT NULL DEFAULT 'normal',
                     assigned_admin_id INTEGER,
+                    admin_unread INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     last_message_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     closed_at TEXT,
@@ -88,6 +89,12 @@ class Database:
                     ON ticket_messages(ticket_id, created_at);
                 """
             )
+            cursor = await db.execute("PRAGMA table_info(tickets)")
+            ticket_columns = {row["name"] for row in await cursor.fetchall()}
+            if "admin_unread" not in ticket_columns:
+                await db.execute(
+                    "ALTER TABLE tickets ADD COLUMN admin_unread INTEGER NOT NULL DEFAULT 0"
+                )
             await db.execute(
                 """
                 UPDATE tickets
@@ -192,9 +199,15 @@ class Database:
                 ),
             )
             message = dict(await cursor.fetchone())
+            admin_unread = 1 if sender_role == "user" else 0
             await db.execute(
-                "UPDATE tickets SET last_message_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (ticket_id,),
+                """
+                UPDATE tickets
+                SET last_message_at = CURRENT_TIMESTAMP,
+                    admin_unread = ?
+                WHERE id = ?
+                """,
+                (admin_unread, ticket_id),
             )
             return message
 
@@ -229,7 +242,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE tickets
-                SET assigned_admin_id = ?, status = 'in_progress'
+                SET assigned_admin_id = ?, status = 'in_progress', admin_unread = 0
                 WHERE id = ?
                 """,
                 (admin_id, ticket_id),
@@ -251,7 +264,7 @@ class Database:
             cursor = await db.execute(
                 f"""
                 UPDATE tickets
-                SET assigned_admin_id = ?, status = 'in_progress'
+                SET assigned_admin_id = ?, status = 'in_progress', admin_unread = 0
                 WHERE id = ?
                     AND status IN ({placeholders})
                     AND (assigned_admin_id IS NULL OR assigned_admin_id = ?)
@@ -278,6 +291,13 @@ class Database:
         async with self.connect() as db:
             cursor = await db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
             return _row_to_dict(await cursor.fetchone())
+
+    async def mark_ticket_read(self, ticket_id: int) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                "UPDATE tickets SET admin_unread = 0 WHERE id = ?",
+                (ticket_id,),
+            )
 
     async def get_ticket_with_user(self, ticket_id: int) -> tuple[dict, dict] | None:
         async with self.connect() as db:
@@ -452,6 +472,7 @@ class Database:
         offset: int = 0,
     ) -> list[dict]:
         condition, params = self._admin_section_condition(section)
+        unread_order = "t.admin_unread DESC," if section == "active" else ""
         async with self.connect() as db:
             cursor = await db.execute(
                 f"""
@@ -473,7 +494,7 @@ class Database:
                     LIMIT 1
                 )
                 WHERE {condition}
-                ORDER BY t.last_message_at DESC
+                ORDER BY {unread_order} t.last_message_at DESC
                 LIMIT ? OFFSET ?
                 """,
                 (*params, limit, offset),
@@ -490,6 +511,19 @@ class Database:
                 WHERE {condition}
                 """,
                 params,
+            )
+            row = await cursor.fetchone()
+            return int(row["count"])
+
+    async def count_active_unread(self) -> int:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM tickets
+                WHERE status IN ('in_progress', 'waiting_user')
+                  AND admin_unread = 1
+                """
             )
             row = await cursor.fetchone()
             return int(row["count"])
@@ -529,6 +563,7 @@ class Database:
         return {
             "new": await self.count_admin_section("new"),
             "active": await self.count_admin_section("active"),
+            "active_unread": await self.count_active_unread(),
             "closed": await self.count_admin_section("closed"),
         }
 
