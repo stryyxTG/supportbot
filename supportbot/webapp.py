@@ -229,11 +229,16 @@ INDEX_HTML = r"""<!doctype html>
     let section = "new";
     let offset = 0;
     let selectedId = null;
+    let currentTicketSignature = "";
+    let autoRefreshBusy = false;
+    let lastAttentionCount = null;
     const limit = 30;
+    const refreshIntervalMs = 4000;
 
     async function api(path, options = {}) {
       const res = await fetch(path, {
         ...options,
+        cache: "no-store",
         headers: {
           "Content-Type": "application/json",
           "X-Telegram-Init-Data": initData,
@@ -262,6 +267,11 @@ INDEX_HTML = r"""<!doctype html>
 
     async function refreshCounts() {
       const data = await api("/api/counts");
+      const attentionCount = data.new + data.active_unread;
+      if (lastAttentionCount !== null && attentionCount > lastAttentionCount) {
+        tg?.HapticFeedback?.notificationOccurred("warning");
+      }
+      lastAttentionCount = attentionCount;
       document.getElementById("count-new").textContent = data.new;
       document.getElementById("count-active").textContent = data.active;
       document.getElementById("count-closed").textContent = data.closed;
@@ -275,16 +285,18 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("closed-tools").classList.toggle("visible", section === "closed");
     }
 
-    async function loadTickets(reset = true) {
+    async function loadTickets(reset = true, preserveLoaded = false) {
+      let requestOffset = offset;
+      let requestLimit = limit;
       if (reset) {
+        requestLimit = preserveLoaded ? Math.max(offset, limit) : limit;
+        requestOffset = 0;
         offset = 0;
-        selectedId = null;
-        document.getElementById("list").innerHTML = "";
       }
       updateSectionTools();
-      const data = await api(`/api/tickets?section=${section}&limit=${limit}&offset=${offset}`);
+      const data = await api(`/api/tickets?section=${section}&limit=${requestLimit}&offset=${requestOffset}`);
       const list = document.getElementById("list");
-      if (reset && data.tickets.length === 0) list.innerHTML = '<div class="empty">Пусто</div>';
+      const fragment = document.createDocumentFragment();
       for (const ticket of data.tickets) {
         const el = document.createElement("div");
         const unread = section === "active" && ticket.admin_unread;
@@ -299,9 +311,17 @@ INDEX_HTML = r"""<!doctype html>
           <div class="preview">${esc(ticket.last_body || "[" + (ticket.last_content_type || "сообщение") + "]")}</div>
         `;
         el.onclick = () => openTicket(ticket.id);
-        list.appendChild(el);
+        fragment.appendChild(el);
       }
-      offset += data.tickets.length;
+      if (reset) {
+        list.replaceChildren();
+      }
+      if (data.tickets.length === 0 && reset) {
+        list.innerHTML = '<div class="empty">Пусто</div>';
+      } else {
+        list.appendChild(fragment);
+      }
+      offset = requestOffset + data.tickets.length;
       document.getElementById("load").style.display = data.has_more ? "block" : "none";
       await refreshCounts();
     }
@@ -310,13 +330,43 @@ INDEX_HTML = r"""<!doctype html>
       app.classList.remove("detail-open");
       tg?.BackButton?.hide();
       selectedId = null;
+      currentTicketSignature = "";
       window.scrollTo({ top: 0, behavior: "auto" });
       await loadTickets(true);
     }
 
-    async function openTicket(id) {
+    function ticketSignature(data) {
+      const messages = data.messages;
+      const lastMessage = messages.length ? messages[messages.length - 1] : null;
+      return [
+        data.ticket.status,
+        data.ticket.assigned_admin_id || "",
+        data.ticket.last_message_at || "",
+        messages.length,
+        lastMessage?.id || "",
+      ].join(":");
+    }
+
+    async function openTicket(id, options = {}) {
+      const preserveDraft = Boolean(options.preserveDraft);
+      const onlyIfChanged = Boolean(options.onlyIfChanged);
+      const reply = document.getElementById("reply");
+      const draft = preserveDraft ? (reply?.value || "") : "";
+      const replyFocused = preserveDraft && document.activeElement === reply;
+      const selectionStart = reply?.selectionStart ?? draft.length;
+      const selectionEnd = reply?.selectionEnd ?? draft.length;
+      const previousScroll = window.scrollY;
+      const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120;
+
       selectedId = id;
       const data = await api(`/api/tickets/${id}`);
+      if (selectedId !== id) return;
+      const nextSignature = ticketSignature(data);
+      if (onlyIfChanged && nextSignature === currentTicketSignature) {
+        await refreshCounts();
+        return;
+      }
+      currentTicketSignature = nextSignature;
       const t = data.ticket;
       const u = data.user;
       const messages = data.messages;
@@ -358,8 +408,24 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("claim")?.addEventListener("click", claimTicket);
       document.getElementById("close")?.addEventListener("click", closeTicket);
       document.getElementById("send")?.addEventListener("click", sendReply);
+      const nextReply = document.getElementById("reply");
+      if (nextReply && preserveDraft) {
+        nextReply.value = draft;
+        if (replyFocused) {
+          nextReply.focus();
+          nextReply.setSelectionRange(selectionStart, selectionEnd);
+        }
+      }
       await refreshCounts();
-      window.scrollTo({ top: 0, behavior: "auto" });
+      if (preserveDraft) {
+        if (nearBottom) {
+          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+        } else {
+          window.scrollTo({ top: previousScroll, behavior: "auto" });
+        }
+      } else {
+        window.scrollTo({ top: 0, behavior: "auto" });
+      }
     }
 
     function renderMessage(m) {
@@ -412,6 +478,22 @@ INDEX_HTML = r"""<!doctype html>
       await openTicket(selectedId);
     }
 
+    async function autoRefresh() {
+      if (autoRefreshBusy || document.hidden) return;
+      autoRefreshBusy = true;
+      try {
+        if (app.classList.contains("detail-open") && selectedId !== null) {
+          await openTicket(selectedId, { preserveDraft: true, onlyIfChanged: true });
+        } else {
+          await loadTickets(true, true);
+        }
+      } catch (error) {
+        console.error("Auto refresh failed", error);
+      } finally {
+        autoRefreshBusy = false;
+      }
+    }
+
     document.querySelectorAll(".tab").forEach(btn => btn.onclick = async () => {
       document.querySelectorAll(".tab").forEach(item => item.classList.remove("active"));
       btn.classList.add("active");
@@ -422,6 +504,9 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("clear-closed").onclick = clearClosedTickets;
     document.getElementById("back-to-list").onclick = showList;
     tg?.BackButton?.onClick(showList);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) autoRefresh();
+    });
     if (!initData) {
       document.body.innerHTML = `
         <div class="empty">
@@ -431,9 +516,11 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       `;
     } else {
-      loadTickets(true).catch(err => {
-        document.body.innerHTML = `<div class="empty">Ошибка доступа или загрузки<br>${esc(err.message)}</div>`;
-      });
+      loadTickets(true)
+        .then(() => window.setInterval(autoRefresh, refreshIntervalMs))
+        .catch(err => {
+          document.body.innerHTML = `<div class="empty">Ошибка доступа или загрузки<br>${esc(err.message)}</div>`;
+        });
     }
   </script>
 </body>
@@ -518,7 +605,11 @@ def _message_row(message: dict) -> dict:
 
 
 async def index(_: web.Request) -> web.Response:
-    return web.Response(text=INDEX_HTML, content_type="text/html")
+    return web.Response(
+        text=INDEX_HTML,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def counts(request: web.Request) -> web.Response:
@@ -531,7 +622,7 @@ async def list_tickets(request: web.Request) -> web.Response:
     _admin_user(request)
     db: Database = request.app["db"]
     section = request.query.get("section", "new")
-    limit = max(1, min(int(request.query.get("limit", "30")), 50))
+    limit = max(1, min(int(request.query.get("limit", "30")), 200))
     offset = max(0, int(request.query.get("offset", "0")))
     tickets = await db.list_admin_section(section, limit=limit, offset=offset)
     total = await db.count_admin_section(section)
