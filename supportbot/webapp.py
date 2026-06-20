@@ -95,6 +95,7 @@ INDEX_HTML = r"""<!doctype html>
     .list { padding: 10px; display: grid; gap: 8px; }
     .ticket {
       position: relative;
+      min-width: 0;
       padding: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -123,7 +124,16 @@ INDEX_HTML = r"""<!doctype html>
       font-weight: 800;
     }
     .user { color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .preview { margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .preview {
+      display: -webkit-box;
+      margin-top: 6px;
+      overflow: hidden;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+    }
     .empty { color: var(--muted); padding: 20px; text-align: center; }
     .detail-top {
       position: sticky;
