@@ -45,7 +45,7 @@ from supportbot.texts import (
     pe,
     user_ticket_card,
 )
-from supportbot.webapp import start_web_app
+from supportbot.webapp import RealtimeHub, start_web_app
 
 
 logger = logging.getLogger(__name__)
@@ -178,6 +178,7 @@ async def create_ticket_from_message(
     db: Database,
     settings: Settings,
     bot: Bot,
+    realtime: RealtimeHub,
 ) -> None:
     user = await db.upsert_user(message.from_user)
     if user.get("is_blocked"):
@@ -231,6 +232,7 @@ async def create_ticket_from_message(
         message,
         "Новый тикет",
     )
+    await realtime.publish("ticket_changed", ticket_id=ticket["id"], reason="new_ticket")
 
 
 async def add_user_reply(
@@ -239,6 +241,7 @@ async def add_user_reply(
     db: Database,
     settings: Settings,
     bot: Bot,
+    realtime: RealtimeHub,
 ) -> None:
     if ticket["status"] in CLOSED_STATUSES:
         await message.answer(
@@ -280,9 +283,10 @@ async def add_user_reply(
         message,
         "Новое сообщение в тикете",
     )
+    await realtime.publish("ticket_changed", ticket_id=ticket["id"], reason="user_replied")
 
 
-def build_router(db: Database, settings: Settings) -> Router:
+def build_router(db: Database, settings: Settings, realtime: RealtimeHub) -> Router:
     router = Router()
 
     @router.message(Command("start"))
@@ -339,7 +343,7 @@ def build_router(db: Database, settings: Settings) -> Router:
         state: FSMContext,
         bot: Bot,
     ) -> None:
-        await create_ticket_from_message(message, state, db, settings, bot)
+        await create_ticket_from_message(message, state, db, settings, bot, realtime)
 
     @router.message(UserReply.waiting_message)
     async def user_reply_message(
@@ -354,7 +358,7 @@ def build_router(db: Database, settings: Settings) -> Router:
         if ticket is None:
             await message.answer("Обращение не найдено.", reply_markup=user_menu())
             return
-        await add_user_reply(message, ticket, db, settings, bot)
+        await add_user_reply(message, ticket, db, settings, bot, realtime)
 
     @router.callback_query(F.data == "common:cancel")
     async def cancel(callback: CallbackQuery, state: FSMContext) -> None:
@@ -435,6 +439,7 @@ def build_router(db: Database, settings: Settings) -> Router:
             None,
             "Пользователь закрыл тикет",
         )
+        await realtime.publish("ticket_changed", ticket_id=ticket_id, reason="user_closed")
 
     @router.callback_query(F.data.startswith("u:reopen:"))
     async def user_reopen_callback(callback: CallbackQuery, bot: Bot) -> None:
@@ -464,6 +469,7 @@ def build_router(db: Database, settings: Settings) -> Router:
             None,
             "Пользователь переоткрыл тикет",
         )
+        await realtime.publish("ticket_changed", ticket_id=ticket_id, reason="user_reopened")
 
     @router.callback_query(F.data.startswith("a:"))
     async def removed_admin_callbacks(callback: CallbackQuery) -> None:
@@ -480,7 +486,7 @@ def build_router(db: Database, settings: Settings) -> Router:
 
         ticket = await db.get_single_active_ticket(message.from_user.id)
         if ticket is not None:
-            await add_user_reply(message, ticket, db, settings, bot)
+            await add_user_reply(message, ticket, db, settings, bot, realtime)
             return
 
         tickets = await db.list_user_tickets(message.from_user.id)
@@ -514,9 +520,10 @@ async def run() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
-    dispatcher.include_router(build_router(db, settings))
+    realtime = RealtimeHub()
+    dispatcher.include_router(build_router(db, settings, realtime))
 
-    runner = await start_web_app(bot, db, settings)
+    runner = await start_web_app(bot, db, settings, realtime)
     logger.info(
         "Admin Mini App server started on %s:%s",
         settings.webapp_host,

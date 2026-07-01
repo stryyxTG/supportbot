@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import mimetypes
+import time
+from contextlib import suppress
 from pathlib import PurePosixPath
 from urllib.parse import parse_qsl
 
@@ -14,6 +17,33 @@ from supportbot.config import Settings, normalize_username
 from supportbot.db import Database
 from supportbot.keyboards import user_ticket_keyboard
 from supportbot.texts import h, status_title
+
+
+class RealtimeHub:
+    def __init__(self) -> None:
+        self._subscribers: set[asyncio.Queue[dict]] = set()
+
+    def subscribe(self) -> asyncio.Queue[dict]:
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=20)
+        self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[dict]) -> None:
+        self._subscribers.discard(queue)
+
+    async def publish(self, event_type: str, **payload: object) -> None:
+        if not self._subscribers:
+            return
+        event = {
+            "type": event_type,
+            "ts": time.time(),
+            **payload,
+        }
+        for queue in tuple(self._subscribers):
+            if queue.full():
+                with suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+            queue.put_nowait(event)
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -241,7 +271,9 @@ INDEX_HTML = r"""<!doctype html>
     let selectedId = null;
     let currentTicketSignature = "";
     let autoRefreshBusy = false;
+    let pendingRealtimeRefresh = false;
     let lastAttentionCount = null;
+    let eventSource = null;
     const limit = 30;
     const refreshIntervalMs = 4000;
 
@@ -501,7 +533,42 @@ INDEX_HTML = r"""<!doctype html>
         console.error("Auto refresh failed", error);
       } finally {
         autoRefreshBusy = false;
+        if (pendingRealtimeRefresh && !document.hidden) {
+          pendingRealtimeRefresh = false;
+          window.setTimeout(autoRefresh, 80);
+        }
       }
+    }
+
+    function scheduleRealtimeRefresh() {
+      if (document.hidden) {
+        pendingRealtimeRefresh = true;
+        return;
+      }
+      if (autoRefreshBusy) {
+        pendingRealtimeRefresh = true;
+        return;
+      }
+      autoRefresh();
+    }
+
+    function startRealtime() {
+      if (!window.EventSource || eventSource || !initData) return;
+      eventSource = new EventSource(`/api/events?init_data=${encodeURIComponent(initData)}`);
+      eventSource.addEventListener("update", event => {
+        try {
+          const data = JSON.parse(event.data || "{}");
+          if (data.type === "ticket_changed" || data.type === "tickets_changed") {
+            scheduleRealtimeRefresh();
+          }
+        } catch (error) {
+          console.error("Bad realtime event", error);
+          scheduleRealtimeRefresh();
+        }
+      });
+      eventSource.onerror = () => {
+        console.warn("Realtime connection interrupted; polling fallback is still active.");
+      };
     }
 
     document.querySelectorAll(".tab").forEach(btn => btn.onclick = async () => {
@@ -515,7 +582,14 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("back-to-list").onclick = showList;
     tg?.BackButton?.onClick(showList);
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) autoRefresh();
+      if (!document.hidden) {
+        pendingRealtimeRefresh = false;
+        autoRefresh();
+      }
+    });
+    window.addEventListener("pagehide", () => {
+      eventSource?.close();
+      eventSource = null;
     });
     if (!initData) {
       document.body.innerHTML = `
@@ -527,7 +601,10 @@ INDEX_HTML = r"""<!doctype html>
       `;
     } else {
       loadTickets(true)
-        .then(() => window.setInterval(autoRefresh, refreshIntervalMs))
+        .then(() => {
+          startRealtime();
+          window.setInterval(autoRefresh, refreshIntervalMs);
+        })
         .catch(err => {
           document.body.innerHTML = `<div class="empty">Ошибка доступа или загрузки<br>${esc(err.message)}</div>`;
         });
@@ -614,12 +691,53 @@ def _message_row(message: dict) -> dict:
     }
 
 
+async def _publish_ticket_changed(request: web.Request, ticket_id: int, reason: str) -> None:
+    hub: RealtimeHub = request.app["realtime"]
+    await hub.publish("ticket_changed", ticket_id=ticket_id, reason=reason)
+
+
 async def index(_: web.Request) -> web.Response:
     return web.Response(
         text=INDEX_HTML,
         content_type="text/html",
         headers={"Cache-Control": "no-store"},
     )
+
+
+async def events(request: web.Request) -> web.StreamResponse:
+    _admin_user(request)
+    hub: RealtimeHub = request.app["realtime"]
+    response = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+    await response.prepare(request)
+
+    queue = hub.subscribe()
+    try:
+        await response.write(b"retry: 1000\n\n")
+        await response.write(b'event: update\ndata: {"type":"ready"}\n\n')
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25)
+            except TimeoutError:
+                await response.write(b": ping\n\n")
+                continue
+            payload = json.dumps(event, ensure_ascii=False)
+            await response.write(f"event: update\ndata: {payload}\n\n".encode())
+    except asyncio.CancelledError:
+        raise
+    except ConnectionResetError:
+        pass
+    finally:
+        hub.unsubscribe(queue)
+
+    return response
 
 
 async def counts(request: web.Request) -> web.Response:
@@ -649,6 +767,9 @@ async def clear_closed_tickets(request: web.Request) -> web.Response:
     _admin_user(request)
     db: Database = request.app["db"]
     deleted = await db.clear_closed_tickets()
+    if deleted:
+        hub: RealtimeHub = request.app["realtime"]
+        await hub.publish("tickets_changed", reason="closed_cleared", deleted=deleted)
     return _json({"ok": True, "deleted": deleted})
 
 
@@ -682,6 +803,7 @@ async def claim_ticket(request: web.Request) -> web.Response:
     ticket = await db.claim_ticket(ticket_id, int(admin["id"]))
     if ticket is None:
         raise web.HTTPConflict(text="Ticket is already claimed or closed")
+    await _publish_ticket_changed(request, ticket_id, "claimed")
     return _json({"ok": True, "ticket": ticket})
 
 
@@ -728,6 +850,7 @@ async def reply_ticket(request: web.Request) -> web.Response:
         int(admin["id"]),
         "admin_replied_from_webapp",
     )
+    await _publish_ticket_changed(request, ticket_id, "admin_replied")
     return _json({"ok": True, "ticket": ticket})
 
 
@@ -757,6 +880,7 @@ async def close_ticket(request: web.Request) -> web.Response:
         )
     except Exception:
         pass
+    await _publish_ticket_changed(request, ticket_id, "closed")
     return _json({"ok": True, "ticket": ticket})
 
 
@@ -816,13 +940,20 @@ async def message_file(request: web.Request) -> web.StreamResponse:
         )
 
 
-async def create_web_app(bot: Bot, db: Database, settings: Settings) -> web.Application:
+async def create_web_app(
+    bot: Bot,
+    db: Database,
+    settings: Settings,
+    realtime: RealtimeHub | None = None,
+) -> web.Application:
     app = web.Application()
     app["bot"] = bot
     app["db"] = db
     app["settings"] = settings
+    app["realtime"] = realtime or RealtimeHub()
     app["client_session"] = ClientSession()
     app.router.add_get("/admin", index)
+    app.router.add_get("/api/events", events)
     app.router.add_get("/api/counts", counts)
     app.router.add_get("/api/tickets", list_tickets)
     app.router.add_post("/api/tickets/closed/clear", clear_closed_tickets)
@@ -839,8 +970,13 @@ async def create_web_app(bot: Bot, db: Database, settings: Settings) -> web.Appl
     return app
 
 
-async def start_web_app(bot: Bot, db: Database, settings: Settings) -> web.AppRunner:
-    app = await create_web_app(bot, db, settings)
+async def start_web_app(
+    bot: Bot,
+    db: Database,
+    settings: Settings,
+    realtime: RealtimeHub | None = None,
+) -> web.AppRunner:
+    app = await create_web_app(bot, db, settings, realtime)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, settings.webapp_host, settings.webapp_port)
