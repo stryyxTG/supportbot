@@ -270,10 +270,13 @@ INDEX_HTML = r"""<!doctype html>
     let offset = 0;
     let selectedId = null;
     let currentTicketSignature = "";
+    let currentTicketActionSignature = "";
+    let lastMessageId = 0;
     let autoRefreshBusy = false;
     let pendingRealtimeRefresh = false;
     let lastAttentionCount = null;
     let eventSource = null;
+    let realtimeConnected = false;
     const limit = 30;
     const refreshIntervalMs = 4000;
 
@@ -373,8 +376,17 @@ INDEX_HTML = r"""<!doctype html>
       tg?.BackButton?.hide();
       selectedId = null;
       currentTicketSignature = "";
+      currentTicketActionSignature = "";
+      lastMessageId = 0;
       window.scrollTo({ top: 0, behavior: "auto" });
       await loadTickets(true);
+    }
+
+    function ticketActionSignature(ticket) {
+      return [
+        ticket.status,
+        ticket.assigned_admin_id || "",
+      ].join(":");
     }
 
     function ticketSignature(data) {
@@ -409,9 +421,11 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       currentTicketSignature = nextSignature;
+      currentTicketActionSignature = ticketActionSignature(data.ticket);
       const t = data.ticket;
       const u = data.user;
       const messages = data.messages;
+      lastMessageId = messages.length ? messages[messages.length - 1].id : 0;
       const isClosed = ["closed", "resolved"].includes(t.status);
       const ticketElement = document.querySelector(`.ticket[data-id="${id}"]`);
       ticketElement?.classList.remove("unread");
@@ -436,7 +450,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="card">
           <div class="title">Сообщения</div>
-          <div class="messages">
+          <div class="messages" id="messages">
             ${messages.map(renderMessage).join("")}
           </div>
           ${!isClosed ? `
@@ -467,6 +481,40 @@ INDEX_HTML = r"""<!doctype html>
         }
       } else {
         window.scrollTo({ top: 0, behavior: "auto" });
+      }
+    }
+
+    async function refreshOpenTicket() {
+      if (selectedId === null) return;
+      const id = selectedId;
+      const previousScroll = window.scrollY;
+      const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 140;
+      const data = await api(`/api/tickets/${id}/updates?after_message_id=${lastMessageId}`);
+      if (selectedId !== id) return;
+
+      const nextActionSignature = ticketActionSignature(data.ticket);
+      if (nextActionSignature !== currentTicketActionSignature) {
+        await openTicket(id, { preserveDraft: true });
+        return;
+      }
+
+      const messagesEl = document.getElementById("messages");
+      const freshMessages = data.messages.filter(message => message.id > lastMessageId);
+      if (messagesEl && freshMessages.length) {
+        messagesEl.insertAdjacentHTML("beforeend", freshMessages.map(renderMessage).join(""));
+        lastMessageId = freshMessages[freshMessages.length - 1].id;
+        currentTicketSignature = [
+          data.ticket.status,
+          data.ticket.assigned_admin_id || "",
+          data.ticket.last_message_at || "",
+          lastMessageId,
+        ].join(":");
+      }
+      await refreshCounts();
+      if (nearBottom && freshMessages.length) {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+      } else {
+        window.scrollTo({ top: previousScroll, behavior: "auto" });
       }
     }
 
@@ -514,10 +562,24 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function sendReply() {
-      const text = document.getElementById("reply").value.trim();
+      const reply = document.getElementById("reply");
+      const send = document.getElementById("send");
+      const text = reply.value.trim();
       if (!text) return;
-      await api(`/api/tickets/${selectedId}/reply`, { method: "POST", body: JSON.stringify({ text }) });
-      await openTicket(selectedId);
+      send.disabled = true;
+      autoRefreshBusy = true;
+      try {
+        await api(`/api/tickets/${selectedId}/reply`, { method: "POST", body: JSON.stringify({ text }) });
+        reply.value = "";
+        await refreshOpenTicket();
+      } finally {
+        autoRefreshBusy = false;
+        send.disabled = false;
+        if (pendingRealtimeRefresh && !document.hidden) {
+          pendingRealtimeRefresh = false;
+          window.setTimeout(autoRefresh, 80);
+        }
+      }
     }
 
     async function autoRefresh() {
@@ -525,7 +587,7 @@ INDEX_HTML = r"""<!doctype html>
       autoRefreshBusy = true;
       try {
         if (app.classList.contains("detail-open") && selectedId !== null) {
-          await openTicket(selectedId, { preserveDraft: true, onlyIfChanged: true });
+          await refreshOpenTicket();
         } else {
           await loadTickets(true, true);
         }
@@ -555,6 +617,9 @@ INDEX_HTML = r"""<!doctype html>
     function startRealtime() {
       if (!window.EventSource || eventSource || !initData) return;
       eventSource = new EventSource(`/api/events?init_data=${encodeURIComponent(initData)}`);
+      eventSource.onopen = () => {
+        realtimeConnected = true;
+      };
       eventSource.addEventListener("update", event => {
         try {
           const data = JSON.parse(event.data || "{}");
@@ -567,6 +632,7 @@ INDEX_HTML = r"""<!doctype html>
         }
       });
       eventSource.onerror = () => {
+        realtimeConnected = false;
         console.warn("Realtime connection interrupted; polling fallback is still active.");
       };
     }
@@ -590,6 +656,7 @@ INDEX_HTML = r"""<!doctype html>
     window.addEventListener("pagehide", () => {
       eventSource?.close();
       eventSource = null;
+      realtimeConnected = false;
     });
     if (!initData) {
       document.body.innerHTML = `
@@ -796,6 +863,30 @@ async def ticket_detail(request: web.Request) -> web.Response:
     )
 
 
+async def ticket_updates(request: web.Request) -> web.Response:
+    _admin_user(request)
+    db: Database = request.app["db"]
+    ticket_id = int(request.match_info["ticket_id"])
+    after_message_id = max(0, int(request.query.get("after_message_id", "0")))
+    data = await db.get_ticket_with_user(ticket_id)
+    if data is None:
+        raise web.HTTPNotFound(text="Ticket not found")
+    ticket, user = data
+    messages = await db.list_ticket_messages_after(ticket_id, after_message_id, limit=100)
+    await db.mark_ticket_read(ticket_id)
+    ticket["admin_unread"] = 0
+    return _json(
+        {
+            "ticket": {
+                **ticket,
+                "status_title": status_title(ticket["status"]),
+            },
+            "user": user,
+            "messages": [_message_row(message) for message in messages],
+        }
+    )
+
+
 async def claim_ticket(request: web.Request) -> web.Response:
     admin = _admin_user(request)
     db: Database = request.app["db"]
@@ -957,6 +1048,7 @@ async def create_web_app(
     app.router.add_get("/api/counts", counts)
     app.router.add_get("/api/tickets", list_tickets)
     app.router.add_post("/api/tickets/closed/clear", clear_closed_tickets)
+    app.router.add_get("/api/tickets/{ticket_id:\\d+}/updates", ticket_updates)
     app.router.add_get("/api/tickets/{ticket_id:\\d+}", ticket_detail)
     app.router.add_post("/api/tickets/{ticket_id:\\d+}/claim", claim_ticket)
     app.router.add_post("/api/tickets/{ticket_id:\\d+}/reply", reply_ticket)

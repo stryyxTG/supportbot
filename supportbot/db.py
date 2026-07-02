@@ -559,6 +559,25 @@ class Database:
             )
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def list_ticket_messages_after(
+        self,
+        ticket_id: int,
+        after_message_id: int,
+        limit: int = 100,
+    ) -> list[dict]:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT *
+                FROM ticket_messages
+                WHERE ticket_id = ? AND id > ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (ticket_id, after_message_id, limit),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
     async def admin_section_counts(self) -> dict:
         return {
             "new": await self.count_admin_section("new"),
